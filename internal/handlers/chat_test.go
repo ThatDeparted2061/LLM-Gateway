@@ -90,3 +90,21 @@ func TestChatRejectsUnknownKeyAndBadBody(t *testing.T) {
 		t.Fatalf("want 400, got %d", w.Code)
 	}
 }
+
+func TestChatStreamsThenReplaysFromCache(t *testing.T) {
+	h, p := newChat(t, 10)
+	const body = `{"stream":true,"messages":[{"role":"user","content":"hello"}]}`
+
+	first := post(h, "k", body)
+	out := first.Body.String()
+	if first.Header().Get("Content-Type") != "text/event-stream" || first.Header().Get("X-Cache") != "miss" ||
+		!strings.Contains(out, `"content":"re: "`) || !strings.Contains(out, `"finish_reason":"stop"`) ||
+		!strings.HasSuffix(out, "data: [DONE]\n\n") {
+		t.Fatalf("bad stream: %s\n%s", first.Header(), out)
+	}
+
+	second := post(h, "k", body)
+	if second.Header().Get("X-Cache") != "exact" || !strings.Contains(second.Body.String(), `"content":"re: hello"`) || p.calls != 1 {
+		t.Fatalf("completed stream should be cached and replayed: %s calls=%d", second.Body, p.calls)
+	}
+}

@@ -47,15 +47,11 @@ func (h *Chat) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "messages must not be empty")
 		return
 	}
-	if req.Stream {
-		writeError(w, http.StatusBadRequest, "stream: true is not supported yet")
-		return
-	}
 
 	ctx := r.Context()
 	exactKey := cache.Key(req.Model, req.Messages)
 	if resp, ok := h.Exact.Get(exactKey); ok {
-		reply(w, resp, "exact")
+		reply(w, resp, "exact", req.Stream)
 		return
 	}
 
@@ -67,18 +63,22 @@ func (h *Chat) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		} else if resp, score, ok := h.Semantic.Lookup(req.Model, vec); ok {
 			slog.Debug("semantic cache hit", "score", score)
 			h.Exact.Set(exactKey, resp) // the next identical prompt skips the embedding call
-			reply(w, resp, "semantic")
+			reply(w, resp, "semantic", req.Stream)
 			return
 		}
 	}
 
+	if req.Stream {
+		h.stream(w, r, req, exactKey, vec)
+		return
+	}
 	resp, err := h.Router.Chat(ctx, req)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, err.Error())
 		return
 	}
 	h.store(exactKey, req.Model, vec, resp)
-	reply(w, resp, "miss")
+	reply(w, resp, "miss", false)
 }
 
 func (h *Chat) store(exactKey, model string, vec []float32, resp *providers.ChatResponse) {
@@ -88,9 +88,14 @@ func (h *Chat) store(exactKey, model string, vec []float32, resp *providers.Chat
 	}
 }
 
-// reply writes resp as JSON. X-Cache (exact | semantic | miss) shows clients,
-// and the k6 test, where the answer came from.
-func reply(w http.ResponseWriter, resp *providers.ChatResponse, cacheStatus string) {
+// reply writes resp as JSON, or as a one-chunk SSE stream if the client asked
+// to stream. X-Cache (exact | semantic | miss) shows clients, and the k6 test,
+// where the answer came from.
+func reply(w http.ResponseWriter, resp *providers.ChatResponse, cacheStatus string, stream bool) {
+	if stream {
+		replay(w, resp, cacheStatus)
+		return
+	}
 	w.Header().Set("X-Cache", cacheStatus)
 	w.Header().Set("X-Provider", resp.Provider)
 	writeJSON(w, http.StatusOK, resp)

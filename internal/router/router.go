@@ -36,6 +36,13 @@ func (r *Router) Chat(ctx context.Context, req providers.ChatRequest) (*provider
 	return resp, nil
 }
 
+// ChatStream returns the first provider stream that opens, plus its provider
+// name. Failover only happens before the first byte; once a stream is flowing,
+// errors arrive on the channel.
+func (r *Router) ChatStream(ctx context.Context, req providers.ChatRequest) (<-chan providers.StreamChunk, string, error) {
+	return try(ctx, r, req, providers.Provider.ChatStream)
+}
+
 // try calls each provider in turn. Non-retryable errors (4xx, network) move
 // straight to the next provider; 429/5xx are retried with backoff first.
 // ponytail: ignores upstream Retry-After; honor it if providers start sending long ones.
