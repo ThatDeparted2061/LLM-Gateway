@@ -10,6 +10,7 @@ import (
 	"math/rand/v2"
 	"time"
 
+	"github.com/harsh-791/git-Projects/llm-gateway/internal/metrics"
 	"github.com/harsh-791/git-Projects/llm-gateway/internal/providers"
 )
 
@@ -55,7 +56,9 @@ func try[T any](ctx context.Context, r *Router, req providers.ChatRequest,
 			req.Model = "" // model names are provider-specific: fallbacks use their configured default
 		}
 		for attempt := 0; ; attempt++ {
+			start := time.Now()
 			out, err := call(p, ctx, req)
+			metrics.ObserveCall(p.Name(), err, time.Since(start))
 			if err == nil {
 				return out, p.Name(), nil
 			}

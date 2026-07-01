@@ -9,12 +9,13 @@ import (
 	"strings"
 	"time"
 
+	"github.com/harsh-791/git-Projects/llm-gateway/internal/metrics"
 	"github.com/harsh-791/git-Projects/llm-gateway/internal/providers"
 )
 
 // stream proxies a provider stream to the client as OpenAI-style SSE, then
 // caches the full answer if the stream finished cleanly.
-func (h *Chat) stream(w http.ResponseWriter, r *http.Request, req providers.ChatRequest, exactKey string, vec []float32) {
+func (h *Chat) stream(w http.ResponseWriter, r *http.Request, apiKey string, req providers.ChatRequest, exactKey string, vec []float32) {
 	ctx := r.Context()
 	chunks, provider, err := h.Router.ChatStream(ctx, req)
 	if err != nil {
@@ -26,6 +27,7 @@ func (h *Chat) stream(w http.ResponseWriter, r *http.Request, req providers.Chat
 	var text strings.Builder
 	var usage providers.Usage
 	var finish string
+	defer func() { metrics.AddTokens(apiKey, provider, usage.TotalTokens) }() // tokens are spent even if the stream is cut short
 	for c := range chunks {
 		if c.Err != nil {
 			slog.Warn("upstream stream failed", "provider", provider, "err", c.Err)

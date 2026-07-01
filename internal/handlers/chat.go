@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/harsh-791/git-Projects/llm-gateway/internal/cache"
+	"github.com/harsh-791/git-Projects/llm-gateway/internal/metrics"
 	"github.com/harsh-791/git-Projects/llm-gateway/internal/providers"
 	"github.com/harsh-791/git-Projects/llm-gateway/internal/ratelimit"
 	"github.com/harsh-791/git-Projects/llm-gateway/internal/router"
@@ -51,6 +52,7 @@ func (h *Chat) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	exactKey := cache.Key(req.Model, req.Messages)
 	if resp, ok := h.Exact.Get(exactKey); ok {
+		metrics.CacheHit("exact")
 		reply(w, resp, "exact", req.Stream)
 		return
 	}
@@ -62,6 +64,7 @@ func (h *Chat) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			slog.Warn("semantic cache skipped: embedding failed", "err", err)
 		} else if resp, score, ok := h.Semantic.Lookup(req.Model, vec); ok {
 			slog.Debug("semantic cache hit", "score", score)
+			metrics.CacheHit("semantic")
 			h.Exact.Set(exactKey, resp) // the next identical prompt skips the embedding call
 			reply(w, resp, "semantic", req.Stream)
 			return
@@ -69,7 +72,7 @@ func (h *Chat) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if req.Stream {
-		h.stream(w, r, req, exactKey, vec)
+		h.stream(w, r, key, req, exactKey, vec)
 		return
 	}
 	resp, err := h.Router.Chat(ctx, req)
@@ -77,6 +80,7 @@ func (h *Chat) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadGateway, err.Error())
 		return
 	}
+	metrics.AddTokens(key, resp.Provider, resp.Usage.TotalTokens)
 	h.store(exactKey, req.Model, vec, resp)
 	reply(w, resp, "miss", false)
 }
