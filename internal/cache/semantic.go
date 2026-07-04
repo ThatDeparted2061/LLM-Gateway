@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"net/http"
 	"slices"
@@ -74,7 +75,8 @@ func (s *Semantic) Embed(ctx context.Context, text string) ([]float32, error) {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("ollama embed: status %d", resp.StatusCode)
+		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		return nil, fmt.Errorf("ollama embed: status %d: %s", resp.StatusCode, bytes.TrimSpace(msg))
 	}
 	var out struct {
 		Embeddings [][]float32 `json:"embeddings"`
