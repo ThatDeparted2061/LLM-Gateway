@@ -1,0 +1,54 @@
+# docker compose up --build
+# Zero-config default: Ollama is the primary provider. To use Groq/Gemini, put
+# GROQ_API_KEY / GEMINI_API_KEY (and PRIMARY_PROVIDER=groq) in a .env file.
+services:
+  gateway:
+    build: .
+    ports:
+      - "8080:8080"
+    environment:
+      PRIMARY_PROVIDER: ${PRIMARY_PROVIDER:-ollama}
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GATEWAY_API_KEYS: ${GATEWAY_API_KEYS:-}
+      OLLAMA_BASE_URL: http://ollama:11434
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-llama3.2}
+    depends_on:
+      ollama-models:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  ollama:
+    image: ollama/ollama:latest
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama:/root/.ollama
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+  # One-shot job: pulls the chat and embedding models into the shared volume
+  # before the gateway starts. Cached after the first run.
+  ollama-models:
+    image: ollama/ollama:latest
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+    entrypoint: ["sh", "-c", "ollama pull ${OLLAMA_MODEL:-llama3.2} && ollama pull nomic-embed-text"]
+    depends_on:
+      ollama:
+        condition: service_healthy
+
+  prometheus:
+    image: prom/prometheus:latest
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    depends_on:
+      - gateway
+
+volumes:
+  ollama:
