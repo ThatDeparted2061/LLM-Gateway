@@ -1,5 +1,7 @@
 # LLM Gateway
 
+[![CI/CD](https://github.com/ThatDeparted2061/LLM-Gateway/actions/workflows/ci.yml/badge.svg)](https://github.com/ThatDeparted2061/LLM-Gateway/actions/workflows/ci.yml)
+
 An OpenAI-compatible gateway in Go that sits in front of **Groq**, **Google Gemini** and a local **Ollama**. It gives clients one endpoint, `POST /v1/chat/completions`, and handles the rest:
 
 - **Rate limiting.** A token bucket per API key.
@@ -56,14 +58,25 @@ An OpenAI-compatible gateway in Go that sits in front of **Groq**, **Google Gemi
 
 ## Quick start
 
+### Docker Hub image
+
+CI publishes a multi-arch (amd64/arm64) image on every push to `main`. This is the smallest way to run it, with cloud providers only:
+
+```bash
+docker run -p 8080:8080 \
+  -e PRIMARY_PROVIDER=groq -e GROQ_API_KEY=gsk_... -e GEMINI_API_KEY=AIza... \
+  -e SEMANTIC_CACHE=false -e GATEWAY_API_KEYS=change-me \
+  <dockerhub-user>/llm-gateway:latest
+```
+
 ### Docker Compose (gateway + Ollama + Prometheus)
 
 ```bash
-cd llm-gateway
+git clone https://github.com/ThatDeparted2061/LLM-Gateway.git && cd LLM-Gateway
 docker compose up --build
 ```
 
-With no API keys this runs entirely on Ollama. On the first run a one-shot `ollama-models` job pulls `llama3.2` and `nomic-embed-text`. To put a cloud provider first, create `llm-gateway/.env` (git-ignored):
+With no API keys this runs entirely on Ollama. On the first run a one-shot `ollama-models` job pulls `llama3.2` and `nomic-embed-text`. To put a cloud provider first, create a `.env` file next to `docker-compose.yml` (git-ignored):
 
 ```bash
 PRIMARY_PROVIDER=groq
@@ -217,6 +230,21 @@ k6 run k6/load-test.js                     # or: k6 run -e BASE_URL=http://host:
 ```bash
 go test ./...
 go vet ./...
+```
+
+## CI/CD
+
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs on every push and pull request:
+
+1. **test**: gofmt check, `go vet`, `go test -race`, and a build.
+2. **docker**: builds the image, then smoke-tests the real container. It must serve `/metrics` and report `503` on `/health` when no provider is reachable.
+3. **publish** (pushes to `main` and `v*` tags only): builds `linux/amd64` + `linux/arm64` and pushes to Docker Hub as `latest` and `sha-<commit>`. A tag `vX.Y.Z` also pushes `X.Y.Z` and `X.Y`.
+
+Publishing turns on once these two are set on the GitHub repo. Until then the pipeline still builds and smoke-tests the image, it just skips the push.
+
+```bash
+gh variable set DOCKERHUB_USERNAME --body <your-dockerhub-username>
+gh secret set DOCKERHUB_TOKEN   # paste a Docker Hub access token (Account settings → Personal access tokens, Read & Write)
 ```
 
 ## Design notes and known limits
