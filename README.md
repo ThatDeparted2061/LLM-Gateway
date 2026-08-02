@@ -1,6 +1,9 @@
 # LLM Gateway
 
 [![CI/CD](https://github.com/ThatDeparted2061/LLM-Gateway/actions/workflows/ci.yml/badge.svg)](https://github.com/ThatDeparted2061/LLM-Gateway/actions/workflows/ci.yml)
+[![Docker Hub](https://img.shields.io/badge/docker-thatdeparted2061%2Fllm--gateway-2496ED?logo=docker&logoColor=white)](https://hub.docker.com/r/thatdeparted2061/llm-gateway)
+[![Image size](https://img.shields.io/docker/image-size/thatdeparted2061/llm-gateway/latest?label=image%20size)](https://hub.docker.com/r/thatdeparted2061/llm-gateway/tags)
+[![Docker pulls](https://img.shields.io/docker/pulls/thatdeparted2061/llm-gateway)](https://hub.docker.com/r/thatdeparted2061/llm-gateway)
 
 An OpenAI-compatible gateway in Go that sits in front of **Groq**, **Google Gemini** and a local **Ollama**. It gives clients one endpoint, `POST /v1/chat/completions`, and handles the rest:
 
@@ -9,6 +12,7 @@ An OpenAI-compatible gateway in Go that sits in front of **Groq**, **Google Gemi
 - **Routing.** Failover across providers, with exponential-backoff retries on 429/5xx.
 - **Streaming.** SSE passthrough. A completed stream is cached and replayed on later hits.
 - **Observability.** Prometheus metrics and a per-provider health check.
+- **Shipping.** A ~5 MB multi-arch (amd64/arm64) distroless image on [Docker Hub](https://hub.docker.com/r/thatdeparted2061/llm-gateway). GitHub Actions tests it, smoke-tests the container, and publishes it on every push to `main`.
 
 ## Architecture
 
@@ -58,16 +62,33 @@ An OpenAI-compatible gateway in Go that sits in front of **Groq**, **Google Gemi
 
 ## Quick start
 
-### Docker Hub image
+### Docker Hub image (fastest)
 
-CI publishes a multi-arch (amd64/arm64) image on every push to `main`. This is the smallest way to run it, with cloud providers only:
+The prebuilt image is [`thatdeparted2061/llm-gateway`](https://hub.docker.com/r/thatdeparted2061/llm-gateway). It runs as non-root on distroless and comes in `linux/amd64` and `linux/arm64`, so it runs natively on Apple Silicon.
 
 ```bash
+docker pull thatdeparted2061/llm-gateway:latest
+
+# Cloud providers only (no Ollama needed)
 docker run -p 8080:8080 \
   -e PRIMARY_PROVIDER=groq -e GROQ_API_KEY=gsk_... -e GEMINI_API_KEY=AIza... \
   -e SEMANTIC_CACHE=false -e GATEWAY_API_KEYS=change-me \
-  <dockerhub-user>/llm-gateway:latest
+  thatdeparted2061/llm-gateway:latest
+
+# Or use the Ollama on your host as the primary, with semantic caching
+# (Docker Desktop; on Linux also add --add-host=host.docker.internal:host-gateway)
+docker run -p 8080:8080 \
+  -e PRIMARY_PROVIDER=ollama -e OLLAMA_BASE_URL=http://host.docker.internal:11434 \
+  thatdeparted2061/llm-gateway:latest
 ```
+
+| Tag | What it is |
+|---|---|
+| `latest` | Head of `main` |
+| `sha-<commit>` | One immutable tag per commit, for pinning and rollbacks |
+| `X.Y.Z`, `X.Y` | Published when a `vX.Y.Z` git tag is pushed |
+
+Configuration is all env vars (see [Configuration](#configuration)). To use a YAML file instead, mount it and pass `-config`: `-v $PWD/config.yaml:/config.yaml thatdeparted2061/llm-gateway -config /config.yaml`.
 
 ### Docker Compose (gateway + Ollama + Prometheus)
 
@@ -238,14 +259,16 @@ go vet ./...
 
 1. **test**: gofmt check, `go vet`, `go test -race`, and a build.
 2. **docker**: builds the image, then smoke-tests the real container. It must serve `/metrics` and report `503` on `/health` when no provider is reachable.
-3. **publish** (pushes to `main` and `v*` tags only): builds `linux/amd64` + `linux/arm64` and pushes to Docker Hub as `latest` and `sha-<commit>`. A tag `vX.Y.Z` also pushes `X.Y.Z` and `X.Y`.
+3. **publish** (pushes to `main` and `v*` tags only): cross-compiles `linux/amd64` + `linux/arm64` and pushes to [Docker Hub](https://hub.docker.com/r/thatdeparted2061/llm-gateway/tags) as `latest` and `sha-<commit>`. A tag `vX.Y.Z` also pushes `X.Y.Z` and `X.Y`.
 
-Publishing turns on once these two are set on the GitHub repo. Until then the pipeline still builds and smoke-tests the image, it just skips the push.
-
-```bash
-gh variable set DOCKERHUB_USERNAME --body <your-dockerhub-username>
-gh secret set DOCKERHUB_TOKEN   # paste a Docker Hub access token (Account settings → Personal access tokens, Read & Write)
 ```
+push / PR ──► test (fmt, vet, race tests) ──► docker build ──► container smoke test ──► publish to Docker Hub
+                                                                                      (main and v* tags only)
+```
+
+To cut a release: `git tag v1.0.0 && git push origin v1.0.0`.
+
+Publishing reads the repo variable `DOCKERHUB_USERNAME` and the repo secret `DOCKERHUB_TOKEN`. A fork without them still builds and smoke-tests the image; it just skips the push.
 
 ## Design notes and known limits
 
