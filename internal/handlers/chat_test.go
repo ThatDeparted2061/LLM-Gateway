@@ -39,7 +39,7 @@ func (e *echo) ChatStream(_ context.Context, req providers.ChatRequest) (<-chan 
 func (e *echo) Name() string               { return "echo" }
 func (e *echo) Ping(context.Context) error { return nil }
 
-func newChat(t *testing.T, burst int) (*Chat, *echo) {
+func newChat(t testing.TB, burst int) (*Chat, *echo) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	p := &echo{}
