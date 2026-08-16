@@ -3,6 +3,7 @@
 package metrics
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -18,14 +19,14 @@ import (
 var (
 	requests = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "llm_requests_total",
-		Help: "Upstream provider calls by provider and outcome: ok, the upstream HTTP status, or error.",
+		Help: "Upstream provider calls by provider and outcome: ok, the upstream HTTP status, canceled (client went away), or error.",
 	}, []string{"provider", "status"})
 
 	// p50/p99: histogram_quantile(0.99, sum by (le, provider) (rate(llm_request_duration_seconds_bucket[5m])))
 	duration = promauto.NewHistogramVec(prometheus.HistogramOpts{
 		Name:    "llm_request_duration_seconds",
 		Help:    "Upstream call latency by provider (time to first byte for streams).",
-		Buckets: []float64{0.05, 0.1, 0.25, 0.5, 1, 2, 4, 8, 16, 32},
+		Buckets: []float64{0.05, 0.1, 0.25, 0.5, 1, 2, 4, 8, 16, 32, 60, 120}, // local models under load can take minutes
 	}, []string{"provider"})
 
 	cacheHits = promauto.NewCounterVec(prometheus.CounterOpts{
@@ -65,6 +66,8 @@ func status(err error) string {
 	switch {
 	case err == nil:
 		return "ok"
+	case errors.Is(err, context.Canceled):
+		return "canceled"
 	case errors.As(err, &se):
 		return strconv.Itoa(se.Code)
 	default:
