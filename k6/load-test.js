@@ -1,5 +1,6 @@
 // k6 run k6/load-test.js            (gateway on localhost:8080)
 // k6 run -e BASE_URL=http://host:8080 k6/load-test.js
+// k6 run -e REPEAT_ONLY=1 -e NO_SLEEP=1 k6/load-test.js   (cached-throughput mode)
 //
 // 100 VUs for 30s, mixing repeated prompts (exact-cache hits), paraphrased
 // prompts (semantic-cache hits) and unique prompts (always miss). The gateway's
@@ -9,6 +10,8 @@ import { check, sleep } from 'k6';
 import { Counter, Rate, Trend } from 'k6/metrics';
 
 const BASE_URL = __ENV.BASE_URL || 'http://localhost:8080';
+const REPEAT_ONLY = __ENV.REPEAT_ONLY === '1'; // only verbatim repeats: measures the cache-hit path
+const NO_SLEEP = __ENV.NO_SLEEP === '1'; // no think time (raise the gateway's RATE_LIMIT_TPS for this)
 
 const cacheHitRate = new Rate('cache_hit_rate');
 const exactHits = new Counter('cache_exact_hits');
@@ -76,7 +79,7 @@ export default function () {
   const roll = Math.random();
   // 60% verbatim repeats, 30% paraphrases, 10% unique prompts
   const content =
-    roll < 0.6 ? topic.prompt
+    REPEAT_ONLY || roll < 0.6 ? topic.prompt
     : roll < 0.9 ? pick(topic.paraphrases)
     : `In one sentence, what is interesting about the number ${Math.floor(Math.random() * 1e6)}?`;
 
@@ -92,5 +95,5 @@ export default function () {
     if (cache === 'miss') misses.add(1);
     (cache === 'miss' ? missLatency : hitLatency).add(res.timings.duration);
   }
-  sleep(0.2 + Math.random() * 0.3); // ~2-4 req/s per VU, under the default 5 tokens/sec limit
+  if (!NO_SLEEP) sleep(0.2 + Math.random() * 0.3); // ~2-4 req/s per VU, under the default 5 tokens/sec limit
 }
