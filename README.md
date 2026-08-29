@@ -14,6 +14,8 @@ An OpenAI-compatible gateway in Go that sits in front of **Groq**, **Google Gemi
 - **Observability.** Prometheus metrics and a per-provider health check.
 - **Shipping.** A ~5 MB multi-arch (amd64/arm64) distroless image on [Docker Hub](https://hub.docker.com/r/thatdeparted2061/llm-gateway). GitHub Actions tests it, smoke-tests the container, and publishes it on every push to `main`.
 
+**Measured on a MacBook Air M4** ([details](#benchmark-results)): **93% cache hit rate** on a mixed 100-user workload, with cache hits at **0.37 ms** median against ~30 s misses on a local 3B model. The cached path sustained **44k req/s**, and the gateway adds **2.3 µs** to a cached request.
+
 ## Architecture
 
 ```
@@ -168,7 +170,7 @@ curl -s localhost:8080/metrics | grep ^llm_
 
 | Metric | Labels | Notes |
 |---|---|---|
-| `llm_requests_total` | `provider`, `status` | One per upstream attempt. `status` is `ok`, the upstream HTTP code (`429`, `503`, …) or `error` |
+| `llm_requests_total` | `provider`, `status` | One per upstream attempt. `status` is `ok`, the upstream HTTP code (`429`, `503`, …), `canceled` when the client disconnected, or `error` |
 | `llm_cache_hits_total` | `cache_type` | `exact` or `semantic` |
 | `llm_request_duration_seconds` | `provider` | Histogram of upstream latency; time to first byte for streams |
 | `llm_tokens_used_total` | `api_key`, `provider` | Upstream tokens. `api_key` is an 8-character SHA-256 prefix so raw keys never reach `/metrics`; cache hits cost 0 |
@@ -193,64 +195,128 @@ sum by (provider) (rate(llm_requests_total{status!="ok"}[5m])) / sum by (provide
 [`k6/load-test.js`](k6/load-test.js) runs 100 VUs for 30 s. Traffic is 60% verbatim repeats (exact hits), 30% paraphrases (semantic hits) and 10% unique prompts (misses). Each VU uses its own API key and the cache is warmed in `setup()`.
 
 ```bash
-k6 run k6/load-test.js                     # or: k6 run -e BASE_URL=http://host:8080 k6/load-test.js
+k6 run -e BASE_URL=http://localhost:8080 k6/load-test.js                          # mixed workload
+k6 run -e BASE_URL=http://localhost:8080 -e REPEAT_ONLY=1 -e NO_SLEEP=1 k6/load-test.js   # cached throughput
 ```
 
-### Benchmark results
+## Benchmark results
 
-> Placeholder. Run the test against your setup and paste the k6 summary here.
+Measured on 2 Oct 2026:
+
+- **Hardware:** MacBook Air (Apple M4, 10 cores, 16 GB), with the gateway and k6 v2.3.0 on the same machine.
+- **Upstream:** a local Ollama serving `qwen2.5-coder:3b` for chat and `nomic-embed-text` for embeddings. No Groq or Gemini keys were used.
+- **Config:** defaults. TTL 1 h, similarity threshold 0.95, and 5 req/s per key with a burst of 10.
+
+### 1. Mixed workload (100 VUs, 30 s)
+
+| Metric | Result |
+|---|---|
+| Requests | 746, **0 failed** |
+| Cache hit rate | **93.0%**: 658 exact and 31 semantic hits out of 741 |
+| Cache-hit latency | **p50 0.37 ms**, p95 12.3 ms |
+| Cache-miss latency | p50 30.5 s, p95 55.0 s |
+| Upstream calls | 57 completed; 70 cancelled by k6 when the test ended |
+| Upstream tokens | 4,906 used; **about 59k avoided by cache hits**, roughly 92% of demand at 86 tokens per answer |
+
+Misses are slow because one 3B model on a laptop GPU was working through a queue of up to 100 concurrent requests. Each VU waits for its answer, so those misses also cap the overall rate at 11.5 req/s. The gateway answered cache hits in under a millisecond at the median.
+
+<details>
+<summary>Raw k6 summary</summary>
 
 ```
-         /\      Grafana   /‾‾/
-    /\  /  \     |\  __   /  /
-   /  \/    \    | |/ /  /   ‾‾\
-  /          \   |   (  |  (‾)  |
- / __________ \  |_|\_\  \_____/
-
-     execution: local
-        script: k6/load-test.js
-        output: -
-
-     scenarios: (100.00%) 1 scenario, 100 max VUs, 1m0s max duration (incl. graceful stop):
-              * default: 100 looping VUs for 30s (gracefulStop: 30s)
-
   █ THRESHOLDS
 
     checks
-    ✓ 'rate>0.9' rate=__.__%
+    ✓ 'rate>0.9' rate=100.00%
 
     latency_cache_hit
-    ✓ 'p(95)<250' p(95)=__ms
+    ✓ 'p(95)<250' p(95)=12.32ms
+
 
   █ TOTAL RESULTS
 
-    checks_total.......................: ____    ___/s
-    checks_succeeded...................: __.__%  ____ out of ____
+    checks_total.......: 741     11.437183/s
+    checks_succeeded...: 100.00% 741 out of 741
+    checks_failed......: 0.00%   0 out of 741
+
+    ✓ status is 200
 
     CUSTOM
-    cache_exact_hits...................: ____    ___/s
-    cache_hit_rate.....................: __.__%  ____ out of ____
-    cache_misses.......................: ____    ___/s
-    cache_semantic_hits................: ____    ___/s
-    latency_cache_hit..................: avg=__ms  min=__ms  med=__ms  max=__ms  p(90)=__ms  p(95)=__ms
-    latency_cache_miss.................: avg=__ms  min=__ms  med=__ms  max=__s   p(90)=__s   p(95)=__s
-    rate_limited.......................: ____    ___/s
+    cache_exact_hits...............: 658    10.156095/s
+    cache_hit_rate.................: 92.98% 689 out of 741
+    cache_misses...................: 52     0.802609/s
+    cache_semantic_hits............: 31     0.478479/s
+    latency_cache_hit..............: avg=15.7ms min=140µs    med=365µs    max=554.97ms p(90)=4ms      p(95)=12.32ms
+    latency_cache_miss.............: avg=29.59s min=1.89s    med=30.5s    max=57.96s   p(90)=51.75s   p(95)=54.98s
 
     HTTP
-    http_req_duration..................: avg=__ms  min=__ms  med=__ms  max=__s   p(90)=__ms  p(95)=__ms
-    http_req_failed....................: _.__%   __ out of ____
-    http_reqs..........................: ____    ___/s
-```
+    http_req_duration..............: avg=2.08s  min=140µs    med=371µs    max=57.96s   p(90)=335.14ms p(95)=15.26s
+      { expected_response:true }...: avg=2.08s  min=140µs    med=371µs    max=57.96s   p(90)=335.14ms p(95)=15.26s
+    http_req_failed................: 0.00%  0 out of 746
+    http_reqs......................: 746    11.514357/s
 
-| Setup | Req/s | Cache hit rate | p95 hit latency | p95 miss latency | Upstream tokens saved |
-|---|---|---|---|---|---|
-| *TBD* | — | — | — | — | — |
+    EXECUTION
+    iteration_duration.............: avg=2.44s  min=201.43ms med=372.38ms max=58.29s   p(90)=607.07ms p(95)=15.78s
+    iterations.....................: 741    11.437183/s
+    vus............................: 70     min=0          max=100
+    vus_max........................: 100    min=100        max=100
+```
+</details>
+
+### 2. Cached throughput (100 VUs, 30 s, no think time)
+
+The gateway ran with `RATE_LIMIT_TPS=1000000 RATE_LIMIT_BURST=1000000`, so this measures the cache-hit path rather than the limiter.
+
+| Metric | Result |
+|---|---|
+| Throughput | **44,460 req/s**: 1.56M requests in 30 s |
+| Latency | p50 1.19 ms, p90 3.23 ms, p95 4.22 ms |
+| Failures | 0 |
+
+k6 itself was competing for the same 10 cores, so a dedicated host would do better.
+
+### 3. Semantic threshold check
+
+These are `nomic-embed-text` cosine similarities between each k6 paraphrase and its original prompt:
+
+| Measure | Result |
+|---|---|
+| Paraphrases at or above 0.95 (become semantic hits) | 11 of 15; scores ranged from 0.904 to 0.996 |
+| Highest similarity between two different topics | 0.58 |
+| Highest similarity of an unrelated prompt to any topic | 0.63 |
+
+At 0.95 this sample produced no false hits. Every paraphrase here scored above 0.90 and unrelated prompts stayed below 0.65, so 0.90 would also work on this data. Tune it against your own traffic.
+
+### 4. Go micro-benchmarks
+
+Run with `go test -run '^$' -bench . -benchmem ./internal/...` on the Apple M4:
+
+| Benchmark | Result |
+|---|---|
+| Exact-cache hit through the whole handler: auth, rate limit, JSON decode, SHA-256 key, lookup, JSON encode | **2.3 µs/op**, 45 allocations |
+| Cache key: SHA-256 of model + messages | 261 ns/op |
+| Semantic lookup in a full cache of 10k 768-dim vectors | 6.3 ms/op |
+| Rate limiter `Allow` across 1,000 keys, called from 10 goroutines at once | 144 ns/op |
+
+### 5. Tests
+
+`go test -race ./...` runs 18 tests, all passing, with no data races. Statement coverage across `internal/` is 78.4%:
+
+| Package | Coverage |
+|---|---|
+| ratelimit | 96% |
+| cache | 85% |
+| router | 84% |
+| handlers | 81% |
+| config | 71% |
+| providers | 71% |
 
 ## Development
 
 ```bash
-go test ./...
+go test -race -cover ./...
 go vet ./...
+go test -run '^$' -bench . -benchmem ./internal/...
 ```
 
 ## CI/CD
@@ -272,7 +338,7 @@ Publishing reads the repo variable `DOCKERHUB_USERNAME` and the repo secret `DOC
 
 ## Design notes and known limits
 
-- **Semantic search is a linear scan** over at most 10k vectors per model. Past that, use an ANN index (HNSW, pgvector, Qdrant).
+- **Semantic search is a linear scan.** A full 10k-entry cache takes about 6 ms per lookup (benchmark 4), which is small next to an LLM call. To hold more entries, use an ANN index (HNSW, pgvector, Qdrant).
 - **The exact cache has no size cap.** Entries expire after the TTL. Add an LRU bound if the number of distinct prompts gets large.
 - **No request coalescing.** Identical concurrent misses each call upstream. Add `singleflight` if stampedes matter.
 - **The cache key leaves out sampling parameters** (temperature, max_tokens), so a prompt has one canonical cached answer. Partial or failed streams are never cached.
